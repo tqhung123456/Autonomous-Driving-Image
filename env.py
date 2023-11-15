@@ -68,10 +68,8 @@ class CarlaEnvContinuous(gymnasium.Env):
         self.debug = debug
 
         # Set image size
-        # self.img_width = 640
-        # self.img_height = 480
-        self.img_width = 64
-        self.img_height = 64
+        self.img_width = 128
+        self.img_height = 128
 
         # Additional information
         self.frame = 0
@@ -105,7 +103,7 @@ class CarlaEnvContinuous(gymnasium.Env):
         # Observations are dictionaries with the sensor data
         self.observation_space = spaces.Dict(
             {
-                "rbg": spaces.Box(
+                "rgb": spaces.Box(
                     0, 255, shape=(self.img_height, self.img_width, 3), dtype=np.uint8
                 ),
                 "info": spaces.Box(-np.inf, np.inf, shape=(3,), dtype=np.float32),
@@ -158,6 +156,9 @@ class CarlaEnvContinuous(gymnasium.Env):
                 self.world.tick()
             result = self._set_up_env()
 
+        for _ in range(6):
+            self.world.tick()
+
         # Wait for image to be captured
         while self.img_captured is None:
             time.sleep(0.1)
@@ -179,7 +180,7 @@ class CarlaEnvContinuous(gymnasium.Env):
 
         obs = self._get_obs()
         with sem:
-            obs_dict = {"rbg": self.img_captured, "info": obs}
+            obs_dict = {"rgb": self.img_captured, "info": obs}
             return obs_dict, {}
 
     def step(self, action):
@@ -210,7 +211,7 @@ class CarlaEnvContinuous(gymnasium.Env):
             reward = -100.0
             print("Collision!")
             with sem:
-                obs_dict = {"rbg": self.img_captured, "info": obs}
+                obs_dict = {"rgb": self.img_captured, "info": obs}
                 return obs_dict, reward, terminated, truncated, {}
 
         if self.ego_vehicle.get_location().distance(self.goal_location) < 10:
@@ -220,7 +221,7 @@ class CarlaEnvContinuous(gymnasium.Env):
             # self._follow_agent()
             # self.goal_location = self._set_goal(location=self.goal_location)
             with sem:
-                obs_dict = {"rbg": self.img_captured, "info": obs}
+                obs_dict = {"rgb": self.img_captured, "info": obs}
                 return obs_dict, reward, terminated, truncated, {}
 
         speed = SPEED_NORMALIZATION * obs[2]
@@ -246,11 +247,11 @@ class CarlaEnvContinuous(gymnasium.Env):
             truncated = True
             print("Time out!")
             with sem:
-                obs_dict = {"rbg": self.img_captured, "info": obs}
+                obs_dict = {"rgb": self.img_captured, "info": obs}
                 return obs_dict, reward, terminated, truncated, {}
 
         with sem:
-            obs_dict = {"rbg": self.img_captured, "info": obs}
+            obs_dict = {"rgb": self.img_captured, "info": obs}
             return obs_dict, reward, terminated, truncated, {}
 
     def _set_up_env(self):
@@ -278,7 +279,9 @@ class CarlaEnvContinuous(gymnasium.Env):
         camera_bp.set_attribute("image_size_x", f"{self.img_width}")
         camera_bp.set_attribute("image_size_y", f"{self.img_height}")
         camera_bp.set_attribute("fov", "100")
-        camera_transform = carla.Transform(carla.Location(x=1.3, z=2.3))
+        camera_transform = carla.Transform(
+            carla.Location(x=2.8, z=2.3), carla.Rotation(pitch=-50)
+        )
         self.camera = self.world.spawn_actor(
             camera_bp, camera_transform, attach_to=self.ego_vehicle
         )
@@ -397,7 +400,7 @@ class CarlaEnvContinuous(gymnasium.Env):
             ego_location = self.ego_vehicle.get_location()
             initial_waypoint = self.map.get_waypoint(ego_location)
 
-        distance_to_travel = 60
+        distance_to_travel = 40
         distance_traveled = 0
         current_waypoint = initial_waypoint
 
@@ -440,13 +443,13 @@ class CarlaEnvContinuous(gymnasium.Env):
 
         goal_location = current_waypoint.transform.location
 
-        self.world.debug.draw_point(
-            goal_location,
-            size=0.1,
-            life_time=1,
-            persistent_lines=False,
-            color=carla.Color(255, 0, 0),
-        )
+        # self.world.debug.draw_point(
+        #     goal_location,
+        #     size=0.1,
+        #     life_time=1,
+        #     persistent_lines=False,
+        #     color=carla.Color(255, 0, 0),
+        # )
 
         return goal_location
 
@@ -775,6 +778,7 @@ class CarlaEnvContinuous(gymnasium.Env):
 
 if __name__ == "__main__":
     import cv2
+    import PIL
 
     env = CarlaEnvContinuous(debug=True)
     env.reset()
@@ -789,9 +793,12 @@ if __name__ == "__main__":
                 # [1.0, random.uniform(-1, 1)]
                 [1.0, 0.0]
             )
-            # cv2.imshow("image", obs["rbg"])
+            # cv2.imshow("image", obs["rgb"])
             # if cv2.waitKey(1) & 0xFF == ord("q"):
             #     break
+            # Save image
+            PIL.Image.fromarray(obs["rgb"]).save(f"test/{env.frame}.png")
+            break
             # print(env.imu_data[0])
             # print(SPEED_THRESHOLD * obs[2])
             # print(obs.shape)
@@ -805,5 +812,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(e)
     finally:
-        # cv2.destroyAllWindows()
         env._close()
