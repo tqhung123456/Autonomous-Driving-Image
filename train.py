@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 
 import gymnasium as gym
-from stable_baselines3 import TD3
+from stable_baselines3 import TD3, PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.noise import (
@@ -13,7 +13,7 @@ from stable_baselines3.common.noise import (
 from stable_baselines3.td3.policies import CnnPolicy, MlpPolicy, MultiInputPolicy
 
 # import create_model
-from env import CarlaEnvContinuous, CarlaEnvOnlyImage
+from env import CarlaEnvFusion
 
 
 class SaveOnIntervalCallback(BaseCallback):
@@ -109,28 +109,30 @@ class TimeCallback(BaseCallback):
 
 
 if __name__ == "__main__":
-    with CarlaEnvOnlyImage() as carla_env:
-        # Check compatibility
-        check_env(carla_env, warn=True)
+    with CarlaEnvFusion() as carla_env:
+        # # Check compatibility
+        # check_env(carla_env, warn=True)
 
-        # mean = [0, 0]  # mean values for throttle/brake and steer
-        # sigma = [0.1, 0.05]  # standard deviations for throttle/brake and steer
-        # normal_action_noise = NormalActionNoise(mean=mean, sigma=sigma)
+        mean = [0, 0]  # mean values for throttle/brake and steer
+        sigma = [0.1, 0.05]  # standard deviations for throttle/brake and steer
+        normal_action_noise = NormalActionNoise(mean=mean, sigma=sigma)
 
-        # theta = 0.15
-        # sigma_ou = 0.2
-        # orn_action_noise = OrnsteinUhlenbeckActionNoise(
-        #     mean=mean, sigma=sigma_ou, theta=theta
+        theta = 0.15
+        sigma_ou = 0.2
+        orn_action_noise = OrnsteinUhlenbeckActionNoise(
+            mean=mean, sigma=sigma_ou, theta=theta
+        )
+
+        # Register the custom network
+        policy_kwargs = dict(
+            net_arch=dict(qf=[128, 256, 128, 64], pi=[128, 256, 128, 64])
+        )
+
+        initial_learning_rate = 1e-4
+        # lr_schedule = linear_schedule_with_min(
+        #     initial_learning_rate, min_value=1e-5, keep_fraction=0.1, decay_fraction=0.2
         # )
-
-        # # Register the custom network
-        # policy_kwargs = dict(net_arch=dict(qf=[128, 256, 128, 64], pi=[128, 256, 128, 64]))
-
-        # initial_learning_rate = 1e-4
-        # # lr_schedule = linear_schedule_with_min(
-        # #     initial_learning_rate, min_value=1e-5, keep_fraction=0.1, decay_fraction=0.2
-        # # )
-        # lr_schedule = stepped_schedule(initial_learning_rate, min_lr=1e-5)
+        lr_schedule = stepped_schedule(initial_learning_rate, min_lr=1e-5)
 
         # # Define the TD3 model
         # model = TD3(
@@ -138,44 +140,73 @@ if __name__ == "__main__":
         #     carla_env,
         #     learning_rate=lr_schedule,
         #     # buffer_size=1000000,
-        #     learning_starts=10000,
+        #     learning_starts=6000,
         #     # batch_size=512,
         #     # action_noise=normal_action_noise,
         #     optimize_memory_usage=False,
+        #     policy_delay=5,
         #     # policy_kwargs=policy_kwargs,
         #     verbose=1,
         #     device="cuda",
         # )
 
-        # # # Define the TD3 model
-        # # model = TD3(
-        # #     "TD3DensePolicy",
-        # #     carla_env,
-        # #     learning_rate=lr_schedule,
-        # #     buffer_size=10000000,
-        # #     learning_starts=6000,
-        # #     batch_size=512,
-        # #     # action_noise=normal_action_noise,
-        # #     optimize_memory_usage=False,
-        # #     policy_kwargs=policy_kwargs,
-        # #     verbose=1,
-        # #     device="cuda",
-        # # )
+        # # Define the TD3 model
+        # model = TD3(
+        #     "TD3DensePolicy",
+        #     carla_env,
+        #     learning_rate=lr_schedule,
+        #     buffer_size=10000000,
+        #     learning_starts=6000,
+        #     batch_size=512,
+        #     # action_noise=normal_action_noise,
+        #     optimize_memory_usage=False,
+        #     policy_kwargs=policy_kwargs,
+        #     verbose=1,
+        #     device="cuda",
+        # )
 
-        # # model = TD3.load("checkpoints/model_9_", carla_env, learning_rate=1e-6)
+        # model = TD3.load(
+        #     "checkpoints/baseline",
+        #     carla_env,
+        #     learning_rate=lr_schedule,
+        #     buffer_size=100000,
+        #     learning_starts=600,
+        #     # batch_size=16,
+        #     # action_noise=normal_action_noise,
+        #     optimize_memory_usage=False,
+        #     policy_delay=2,
+        #     # policy_kwargs=policy_kwargs,
+        #     verbose=1,
+        #     device="cuda",
+        # )
 
-        # save_interval = 1000
-        # save_path = "checkpoints"
+        model = PPO.load(
+            "checkpoints/ppo_baseline",
+            carla_env,
+            learning_rate=lr_schedule,
+            # buffer_size=100000,
+            # learning_starts=600,
+            # batch_size=16,
+            # action_noise=normal_action_noise,
+            # optimize_memory_usage=False,
+            # policy_delay=2,
+            # policy_kwargs=policy_kwargs,
+            verbose=1,
+            device="cuda",
+        )
 
-        # checkpoint_callback = SaveOnIntervalCallback(save_interval, save_path)
+        save_interval = 1000
+        save_path = "checkpoints"
 
-        # # Train the model
-        # try:
-        #     model.learn(
-        #         total_timesteps=4000000,
-        #         callback=checkpoint_callback,
-        #         # log_interval=1,
-        #         progress_bar=True,
-        #     )
-        # except Exception as e:
-        #     print(e)
+        checkpoint_callback = SaveOnIntervalCallback(save_interval, save_path)
+
+        # Train the model
+        try:
+            model.learn(
+                total_timesteps=4000000,
+                callback=checkpoint_callback,
+                # log_interval=1,
+                progress_bar=True,
+            )
+        except Exception as e:
+            print(e)

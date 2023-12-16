@@ -3,202 +3,162 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 import torch.optim as optim
-from stable_baselines3 import A2C, PPO, SAC, TD3
+from stable_baselines3 import TD3, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.utils import polyak_update
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.dataset import Dataset, random_split
 from tqdm import tqdm
+from env import CarlaEnvFusion, CarlaEnvDummy
+from create_model import ComplexMultiInputPolicy, PPOComplexMultiInputPolicy
 
 
-class ExpertDataSet(Dataset):
-    def __init__(
-        self,
-        expert_observations,
-        expert_actions,
-        expert_rewards,
-        expert_dones,
-        expert_next_observations,
-    ):
-        self.observations = expert_observations
-        self.actions = expert_actions
-        self.rewards = expert_rewards
-        self.dones = expert_dones
-        self.next_observations = expert_next_observations
-
-    def __getitem__(self, index):
-        return (
-            self.observations[index],
-            self.actions[index],
-            self.rewards[index],
-            self.dones[index],
-            self.next_observations[index],
-        )
-
-    def __len__(self):
-        return len(self.dones)
+NO_CUDA = False
+SEED = 42
+BATCH_SIZE = 64
+EPOCHS = 10
+LEARNING_RATE = 0.001
+LOG_INTERVAL = 100
+TEST_BATCH_SIZE = 64
 
 
-def train(
-    student,
-    batch_size=64,
-    epochs=1000,
-    log_interval=100,
-    no_cuda=False,
-    seed=42,
-) -> None:
-    use_cuda = not no_cuda and th.cuda.is_available()
-    th.manual_seed(seed)
-    device = th.device("cuda" if use_cuda else "cpu")
-    kwargs = {"num_workers": 12, "pin_memory": True} if use_cuda else {}
-
-    # Here, we use PyTorch `DataLoader` to our load previously created `ExpertDataset` for training
-    # and testing
-    train_loader = th.utils.data.DataLoader(
-        dataset=train_expert_dataset, batch_size=batch_size, shuffle=True, **kwargs
-    )
-
-    student.policy.to(device)
-
-    # Switch to train mode (this affects batch norm / dropout)
-    student.policy.set_training_mode(True)
-
-    # Update learning rate according to lr schedule
-    # student._update_learning_rate([student.actor.optimizer, student.critic.optimizer])
-
-    for epoch in range(1, epochs + 1):
-        for batch_idx, (
-            observations,
-            actions,
-            rewards,
-            dones,
-            next_observations,
-        ) in enumerate(train_loader):
-            observations, actions, rewards, dones, next_observations = (
-                observations.to(device),
-                actions.to(device),
-                rewards.to(device),
-                dones.to(device),
-                next_observations.to(device),
-            )
-
-            with th.no_grad():
-                # Select action according to policy and add clipped noise
-                next_actions = student.actor_target(next_observations)
-
-                # Compute the next Q-values: min over all critics targets
-                next_q_values = th.cat(
-                    student.critic_target(next_observations, next_actions),
-                    dim=1,
-                )
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                target_q_values = rewards + (1 - dones) * student.gamma * next_q_values
-
-            # Get current Q-values estimates for each critic network
-            current_q_values = student.critic(observations, actions)
-
-            # Compute critic loss
-            critic_loss = sum(
-                F.mse_loss(current_q, target_q_values) for current_q in current_q_values
-            )
-            assert isinstance(critic_loss, th.Tensor)
-
-            # Optimize the critics
-            student.critic.optimizer.zero_grad()
-            critic_loss.backward()
-            student.critic.optimizer.step()
-
-            # Delayed policy updates
-            if student._n_updates % student.policy_delay == 0:
-                # Compute actor loss
-                actor_loss = -student.critic.q1_forward(
-                    observations, student.actor(observations)
-                ).mean()
-
-                # Optimize the actor
-                student.actor.optimizer.zero_grad()
-                actor_loss.backward()
-                student.actor.optimizer.step()
-
-                polyak_update(
-                    student.critic.parameters(),
-                    student.critic_target.parameters(),
-                    student.tau,
-                )
-                polyak_update(
-                    student.actor.parameters(),
-                    student.actor_target.parameters(),
-                    student.tau,
-                )
-                # Copy running stats, see GH issue #996
-                polyak_update(
-                    student.critic_batch_norm_stats,
-                    student.critic_batch_norm_stats_target,
-                    1.0,
-                )
-                polyak_update(
-                    student.actor_batch_norm_stats,
-                    student.actor_batch_norm_stats_target,
-                    1.0,
-                )
-
-            if batch_idx % log_interval == 0:
-                print(
-                    "Train Epoch: {} [{}/{} ({:.0f}%)]\tActor Loss: {:.6f}\tCritic Loss: {:.6f}".format(
-                        epoch,
-                        batch_idx * len(dones),
-                        len(train_loader.dataset),
-                        100.0 * batch_idx / len(train_loader),
-                        actor_loss.item(),
-                        critic_loss.item(),
-                    )
-                )
+def batch_indices(indices, batch_size=BATCH_SIZE):
+    """Yield successive batches of indices along with the batch number."""
+    batch_num = 0
+    for start_idx in range(0, len(indices), batch_size):
+        end_idx = min(start_idx + batch_size, len(indices))
+        yield batch_num, indices[start_idx:end_idx]
+        batch_num += 1
 
 
 if __name__ == "__main__":
-    env_id = "Pendulum-v1"
-    env = gym.make(env_id)
-    ppo_expert = TD3.load("ppo_expert", env)
-    student = TD3("MlpPolicy", env_id, verbose=1, learning_rate=1e-8, device="cpu")
+    with CarlaEnvDummy(debug=False) as carla_env:
+        # student = TD3(
+        #     ComplexMultiInputPolicy,
+        #     carla_env,
+        #     learning_rate=0.001,
+        #     buffer_size=1,
+        #     learning_starts=6000,
+        #     # batch_size=512,
+        #     # action_noise=normal_action_noise,
+        #     optimize_memory_usage=False,
+        #     policy_delay=5,
+        #     # policy_kwargs=policy_kwargs,
+        #     verbose=1,
+        #     device="cuda",
+        # )
 
-    # Load the data
-    data = np.load("expert_data.npz")
+        student = PPO(
+            PPOComplexMultiInputPolicy,
+            carla_env,
+            learning_rate=0.001,
+            verbose=1,
+            device="cuda",
+        )
+        student = PPO.load("ppo_pretrained")
 
-    # Access the saved arrays using their keys
-    expert_observations = data["expert_observations"]
-    expert_actions = data["expert_actions"]
-    expert_rewards = data["expert_rewards"]
-    expert_dones = data["expert_dones"]
-    expert_next_observations = data["expert_next_observations"]
+        # Load the data
+        upper = np.load("upper.npy")
+        lower = np.load("lower.npy")
+        info = np.load("info.npy")
+        action = np.load("action.npy")
 
-    expert_dataset = ExpertDataSet(
-        expert_observations,
-        expert_actions,
-        expert_rewards,
-        expert_dones,
-        expert_next_observations,
-    )
+        # Change image to CxHxW
+        upper = np.transpose(upper, (0, 3, 1, 2))
+        lower = np.transpose(lower, (0, 3, 1, 2))
 
-    train_size = int(1 * len(expert_dataset))
-    test_size = len(expert_dataset) - train_size
-    train_expert_dataset, test_expert_dataset = random_split(
-        expert_dataset, [train_size, test_size]
-    )
+        # Change to tensor
+        upper = th.from_numpy(upper)
+        lower = th.from_numpy(lower)
+        info = th.from_numpy(info)
+        action = th.from_numpy(action)
 
-    mean_reward, std_reward = evaluate_policy(student, env, n_eval_episodes=10)
+        # Combine into dict
+        dataset = [
+            {"upper": up, "lower": low, "info": inf}
+            for up, low, inf in zip(upper, lower, info)
+        ]
 
-    train(
-        student,
-        batch_size=64,
-        epochs=100,
-        log_interval=100,
-        no_cuda=True,
-        seed=42,
-    )
-    student.save("student")
+        # Create an array of indices
+        data_length = len(dataset)
+        indices = np.arange(data_length)
 
-    new_mean_reward, new_std_reward = evaluate_policy(student, env, n_eval_episodes=10)
+        # Split dataset
+        train_size = int(0.8 * data_length)
+        test_size = data_length - train_size
+        train_dataset, test_dataset = random_split(indices, [train_size, test_size])
 
-    print(f"Mean reward = {mean_reward} +/- {std_reward}")
-    print(f"Mean reward = {new_mean_reward} +/- {new_std_reward}")
+        use_cuda = not NO_CUDA and th.cuda.is_available()
+        th.manual_seed(SEED)
+        device = th.device("cuda" if use_cuda else "cpu")
+        criterion = nn.MSELoss()
+
+        # Extract initial policy
+        actor = student.policy.to(device)
+
+        # Define an Optimizer and a learning rate schedule.
+        actor_optimizer = optim.AdamW(actor.parameters(), lr=LEARNING_RATE)
+
+        total_batches = (len(train_dataset) + BATCH_SIZE - 1) // BATCH_SIZE
+
+        actor.train()
+        for epoch in range(1, EPOCHS + 1):
+            train_loader = batch_indices(train_dataset)
+            for batch_idx, batch in train_loader:
+                # Extract the tensors for each key and stack them along the first dimension (batch dimension)
+                batch_upper = th.stack(
+                    [dataset[idx]["upper"].to(device) for idx in batch]
+                )
+                batch_lower = th.stack(
+                    [dataset[idx]["lower"].to(device) for idx in batch]
+                )
+                batch_info = th.stack(
+                    [dataset[idx]["info"].to(device) for idx in batch]
+                )
+                target_action = th.stack([action[idx].to(device) for idx in batch])
+
+                # Now create a dictionary with these batched tensors
+                data = {"upper": batch_upper, "lower": batch_lower, "info": batch_info}
+
+                predict = actor(data)
+                # actor_loss = criterion(predict, target_action)
+                actor_loss = criterion(predict[0], target_action)
+
+                actor_optimizer.zero_grad()
+                actor_loss.backward()
+                actor_optimizer.step()
+
+                if batch_idx % LOG_INTERVAL == 0:
+                    print(
+                        "Train Epoch: {} [{}/{} ({:.0f}%)]\tActor Loss: {:.6f}".format(
+                            epoch,
+                            batch_idx * len(data),
+                            data_length,
+                            100.0 * batch_idx / total_batches,
+                            actor_loss.item(),
+                        )
+                    )
+
+        def test(actor, device, test_loader):
+            actor.eval()
+            actor_loss = 0
+            with th.no_grad():
+                for (data,) in test_loader:
+                    target_action = th.from_numpy(
+                        np.array([1, 0], dtype=np.float32)
+                    ).to(device)
+                    data = data.to(device)
+
+                    # Repeat target_action to match the batch size
+                    target_action = target_action.repeat(data.size(0), 1)
+
+                    action = actor(data)
+                    actor_loss = criterion(action, target_action)
+
+                    actor_loss /= len(test_loader.dataset)
+            print("\nTest set: Average actor loss: {:.4f}\n".format(actor_loss.item()))
+
+        # Implant the trained policy network back into the RL student agent
+        student.policy = actor
+        student.save("ppo_pretrained")

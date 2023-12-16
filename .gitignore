@@ -29,3 +29,7 @@ model/resnet18_bezierlanenet_tusimple_aug1b_20211109.pt
 note.txt
 ppo_expert.zip
 student.zip
+checkpoints/
+*.npy
+*.zip
+*.npz
