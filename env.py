@@ -850,6 +850,7 @@ class CarlaEnvFusion(gymnasium.Env):
         self.lidar_data = None
         self.radar_data_dict = {}
         self.imu_data = None
+        self.img_tracking = None
         self.npc = []
         self.xbins = np.linspace(-LIDAR_RANGE, LIDAR_RANGE, 128 + 1)
         self.ybins = np.linspace(-LIDAR_RANGE, LIDAR_RANGE, 128 + 1)
@@ -930,6 +931,7 @@ class CarlaEnvFusion(gymnasium.Env):
         self.lidar_data = None
         self.radar_data_dict = {}
         self.imu_data = None
+        self.img_tracking = None
 
         result = self._set_up_env()
         while not result:
@@ -994,12 +996,13 @@ class CarlaEnvFusion(gymnasium.Env):
         if self.ego_vehicle.get_location().distance(self.goal_location) < 10:
             # terminated = True
             reward = 100.0
-            print("Goal reached!")
+            # print("Goal reached!")
             self._follow_agent()
             self.goal_location = self._set_goal(location=self.goal_location)
             return obs, reward, terminated, truncated, {}
 
         speed = SPEED_NORMALIZATION * obs["info"][2]
+        # print(speed)
         # reward = float(action[0] - abs(action[1]) - abs(obs[0]))
         # angle_to_goal = obs[0]
         # reward += 1 - abs(angle_to_goal)
@@ -1058,6 +1061,22 @@ class CarlaEnvFusion(gymnasium.Env):
             # )
             # self.camera.listen(self._process_image)
             self.camera = None
+
+            # Setup tracking camera
+            tracking_camera_bp = self.blueprint_library.find("sensor.camera.rgb")
+            tracking_camera_bp.set_attribute("image_size_x", "640")
+            tracking_camera_bp.set_attribute("image_size_y", "640")
+            tracking_camera_bp.set_attribute("fov", "100")
+            tracking_camera_transform = carla.Transform(
+                carla.Location(x=-10.0, y=0.0, z=10.0),
+                carla.Rotation(pitch=-35.0, yaw=0.0, roll=0.0),
+            )
+            self.tracking_camera = self.world.spawn_actor(
+                tracking_camera_bp,
+                tracking_camera_transform,
+                attach_to=self.ego_vehicle,
+            )
+            self.tracking_camera.listen(self._process_tracking_image)
 
             # Setup lidar sensor
             lidar_bp = self.blueprint_library.find("sensor.lidar.ray_cast")
@@ -1415,6 +1434,12 @@ class CarlaEnvFusion(gymnasium.Env):
         # Transpose the image to have channels as the first dimension
         # Changing from (height, width, num_channels) to (num_channels, height, width)
         self.img_captured = np.transpose(img_captured, (2, 0, 1))
+
+    def _process_tracking_image(self, image):
+        img_tracking = np.array(image.raw_data, dtype=np.dtype("uint8"))
+        img_tracking = np.reshape(img_tracking, (640, 640, 4))
+        img_tracking = img_tracking[:, :, :3]
+        self.img_tracking = img_tracking[:, :, ::-1]
 
     def _process_lidar(self, data):
         # Convert the raw data to numpy array
@@ -2550,8 +2575,9 @@ if __name__ == "__main__":
             # print("NPC location: ", env.vehicle.get_location())
             # cv2.imshow("Lower LIDAR", env.lower_lidar_data)
             # cv2.imshow("Upper LIDAR", env.upper_lidar_data)
-            # if cv2.waitKey(1) & 0xFF == ord("q"):
-            #     break
+            cv2.imshow("RGB", env.img_tracking)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
             # # Save image
             # PIL.Image.fromarray(obs["rgb"]).save(f"test/{env.frame}.png")
             # break

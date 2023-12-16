@@ -33,3 +33,7 @@ checkpoints/
 *.npy
 *.zip
 *.npz
+d.py
+data.npz
+pretraining copy.py
+test/
