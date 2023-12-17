@@ -18,6 +18,8 @@ with CarlaEnvFusion() as carla_env:
             if terminated or truncated:
                 obs, _ = carla_env.reset()
             # Save image
-            PIL.Image.fromarray(carla_env.img_tracking).save(f"test/{carla_env.frame}.jpg")
+            PIL.Image.fromarray(carla_env.img_tracking).save(
+                f"test/{carla_env.frame}.jpg"
+            )
     except Exception as e:
         print(e)
